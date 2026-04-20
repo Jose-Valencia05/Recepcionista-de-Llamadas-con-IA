@@ -34,31 +34,30 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/**
+ * Actividad que gestiona la interfaz de usuario para llamadas entrantes.
+ */
 class IncomingCallActivity : ComponentActivity() {
 
-    // Variable para sostener el control del sensor
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onStart() {
         super.onStart()
-        // Adquirimos acceso al Sistema Nervioso Autónomo de Energía
+        // Gestión del sensor de proximidad.
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
 
-        // Verificamos si el teléfono tiene el hardware físico (Sensor de proximidad)
         if (powerManager.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
             wakeLock = powerManager.newWakeLock(
                 PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
                 "RwAI:ProximityLock"
             )
-            // Activamos el sensor. Desde este momento, si algo tapa el sensor, la pantalla muere.
             wakeLock?.acquire()
         }
     }
 
     override fun onStop() {
         super.onStop()
-        // Cuando la llamada termina o la app se oculta, liberamos el hardware
-        // para no drenar la batería en segundo plano.
+        // Liberación del sensor al detener la actividad.
         if (wakeLock?.isHeld == true) {
             wakeLock?.release()
         }
@@ -67,13 +66,12 @@ class IncomingCallActivity : ComponentActivity() {
     @RequiresApi(Build.VERSION_CODES.R)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 1. INYECCIÓN DEL PASE VIP (Bypass de Pantalla de Bloqueo)
-        // Le dice al hardware: "Enciende los LED de la pantalla inmediatamente"
+        
+        // Configuración para mostrar la actividad sobre la pantalla de bloqueo.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         } else {
-            // Soporte para teléfonos más antiguos (Legacy)
             @Suppress("DEPRECATION")
             window.addFlags(
                 android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
@@ -82,37 +80,33 @@ class IncomingCallActivity : ComponentActivity() {
             )
         }
 
-        // 2. Extraemos los datos del Intent (Tu código actual)
-        val numeroContacto = intent.getStringExtra("NUMERO_CONTACTO") ?: "Número Desconocido"
-        val nombreContacto = intent.getStringExtra("NOMBRE_CONTACTO") ?: "Contacto"
+        val phoneNumber = intent.getStringExtra("NUMERO_CONTACTO") ?: "Unknown Number"
+        val contactName = intent.getStringExtra("NOMBRE_CONTACTO") ?: "Contact"
 
-        // Algoritmo para extraer las iniciales (Ej.: "Carlos Pérez" -> "CP")
-        val iniciales = nombreContacto.split(" ")
+        val initials = contactName.split(" ")
             .mapNotNull { it.firstOrNull()?.toString() }
             .take(2)
             .joinToString("")
             .uppercase()
 
         setContent {
-            PantallaLlamadaFigma(
-                numero = numeroContacto,
-                iniciales = iniciales,
-                nombreContacto = nombreContacto,
-                onContestar = {
-                    AdministradorDeLlamadas.llamadaActual?.answer(VideoProfile.STATE_AUDIO_ONLY)
+            IncomingCallScreen(
+                number = phoneNumber,
+                initials = initials,
+                contactName = contactName,
+                onAnswer = {
+                    CallManager.currentCall?.answer(VideoProfile.STATE_AUDIO_ONLY)
 
-                    // Inyectamos el impulso hacia la nueva pantalla
                     val intent = Intent(this@IncomingCallActivity, ActiveCallActivity::class.java).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                        putExtra("NUMERO_CONTACTO", numeroContacto)
-                        putExtra("NOMBRE_CONTACTO", nombreContacto)
+                        putExtra("NUMERO_CONTACTO", phoneNumber)
+                        putExtra("NOMBRE_CONTACTO", contactName)
                     }
                     startActivity(intent)
-
-                    finish() // Ahora sí, matamos la pantalla de entrada
+                    finish()
                 },
-                onRechazar = {
-                    AdministradorDeLlamadas.llamadaActual?.reject(Call.REJECT_REASON_DECLINED)
+                onReject = {
+                    CallManager.currentCall?.reject(Call.REJECT_REASON_DECLINED)
                     finish()
                 }
             )
@@ -121,20 +115,18 @@ class IncomingCallActivity : ComponentActivity() {
 }
 
 @Composable
-fun PantallaLlamadaFigma(
-    numero: String,
-    iniciales: String,
-    nombreContacto: String,
-    onContestar: () -> Unit,
-    onRechazar: () -> Unit
+fun IncomingCallScreen(
+    number: String,
+    initials: String,
+    contactName: String,
+    onAnswer: () -> Unit,
+    onReject: () -> Unit
 ) {
-    // --- 1. CONFIGURACIÓN DE ANIMACIONES CINESTÉSICAS ---
-    val infiniteTransition = rememberInfiniteTransition(label = "breathing_pulse")
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse_animation")
 
-    // Pulso Primario (Contestar - Verde) -> Pulso de Vida
     val scalePrimary by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = 1.05f, // Crece ligeramente
+        targetValue = 1.05f,
         animationSpec = infiniteRepeatable(
             animation = tween(1250, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -142,14 +134,13 @@ fun PantallaLlamadaFigma(
         label = "scalePrimary"
     )
 
-    // --- 2. ESTRUCTURA BASE (Fondo Negro Absoluto OLED) ---
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF000000)) // Pure Black de Figma
+            .background(Color(0xFF000000))
             .padding(horizontal = 24.dp)
     ) {
-        // --- 3. CAPA SUPERIOR: TopAppBar (Alineación Horizontal) ---
+        // Barra superior
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -160,15 +151,15 @@ fun PantallaLlamadaFigma(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector = Icons.Default.Security, // Shield icon
-                    contentDescription = "Shield",
-                    tint = Color(0xFF78DC77), // Green primary
+                    imageVector = Icons.Default.Security,
+                    contentDescription = "Secure",
+                    tint = Color(0xFF78DC77),
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "INCOMING CALL",
-                    color = Color(0xFFE2E2E2), // Text primary
+                    color = Color(0xFFE2E2E2),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp
@@ -182,24 +173,23 @@ fun PantallaLlamadaFigma(
             )
         }
 
-        // --- 4. CUERPO PRINCIPAL: Info del Contacto (Alineación Editorial Izquierda) ---
+        // Información del contacto
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 100.dp)
                 .align(Alignment.TopStart)
         ) {
-            // Avatar Circular (Gris Oscuro con iniciales Verdes)
             Box(
                 modifier = Modifier
                     .size(96.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF2A2A2A)), // dark gray surface
+                    .background(Color(0xFF2A2A2A)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = iniciales,
-                    color = Color(0xFF78DC77), // Green
+                    text = initials,
+                    color = Color(0xFF78DC77),
                     fontSize = 32.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -207,29 +197,26 @@ fun PantallaLlamadaFigma(
 
             Spacer(modifier = Modifier.height(48.dp))
 
-            // Nombre (Grande, Negrita, Blanco)
             Text(
-                text = nombreContacto,
-                color = Color(0xFFE2E2E2), // White
+                text = contactName,
+                color = Color(0xFFE2E2E2),
                 fontSize = 56.sp,
                 fontWeight = FontWeight.Bold,
                 lineHeight = 56.sp,
-                letterSpacing = (-1.5).sp // Kerning negativo para look editorial
+                letterSpacing = (-1.5).sp
             )
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Número (Gris Claro)
             Text(
-                text = numero,
-                color = Color(0xFFBECAB9), // Text variant
+                text = number,
+                color = Color(0xFFBECAB9),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium
             )
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Indicador de estado (Punto Verde parpadeante)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
@@ -239,7 +226,7 @@ fun PantallaLlamadaFigma(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "LLAMADA ENTRANTE DE CONTACTO...",
+                    text = "INCOMING CALL FROM CONTACT...",
                     color = Color(0xFFBECAB9).copy(alpha = 0.7f),
                     fontSize = 10.sp,
                     letterSpacing = 0.5.sp
@@ -247,17 +234,16 @@ fun PantallaLlamadaFigma(
             }
         }
 
-        // --- 5. ACCIONES RÁPIDAS (Panel flotante translúcido) ---
-        // Se alinea abajo a la izquierda, pero con padding alto para flotar sobre los botones
+        // Acciones rápidas
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(bottom = 160.dp) // Flota sobre los botones de abajo
+                .padding(bottom = 160.dp)
         ) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1B1B1B).copy(alpha = 0.8f)) // Simulación Glassmorphism
+                    .background(Color(0xFF1B1B1B).copy(alpha = 0.8f))
                     .border(1.dp, Color(0xFFE2E2E2).copy(alpha = 0.05f), RoundedCornerShape(16.dp))
                     .padding(horizontal = 20.dp, vertical = 16.dp)
             ) {
@@ -271,20 +257,18 @@ fun PantallaLlamadaFigma(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Row {
-                        // Icono Mensaje (Outline)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable { /* Intent SMS */ }
+                            modifier = Modifier.clickable { /* SMS Intent */ }
                         ) {
                             Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Msg", tint = Color(0xFFE2E2E2), modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Message", color = Color(0xFFE2E2E2), fontSize = 13.sp)
                         }
                         Spacer(modifier = Modifier.width(20.dp))
-                        // Icono Recordatorio (Outline)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable { /* Intent Calendario */ }
+                            modifier = Modifier.clickable { /* Calendar Intent */ }
                         ) {
                             Icon(Icons.Outlined.CalendarToday, contentDescription = "Remind", tint = Color(0xFFE2E2E2), modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
@@ -295,8 +279,7 @@ fun PantallaLlamadaFigma(
             }
         }
 
-        // --- 6. BOTONES DE ACCIÓN PRINCIPALES (Bottom Center) ---
-        // --- 6. SEGURO MECÁNICO: Deslizador de Acción ---
+        // Deslizador para contestar o rechazar
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -304,12 +287,10 @@ fun PantallaLlamadaFigma(
                 .align(Alignment.BottomCenter),
             contentAlignment = Alignment.Center
         ) {
-            // Variables de fricción y movimiento
             var offsetX by remember { mutableFloatStateOf(0f) }
-            val limiteDeslizamiento = 250f // Píxeles máximos que se puede mover
-            val umbralActivacion = 150f // Píxeles necesarios para activar la acción
+            val dragLimit = 250f
+            val activationThreshold = 150f
 
-            // Pista/Carril visual de fondo
             Box(
                 modifier = Modifier
                     .width(280.dp)
@@ -318,7 +299,6 @@ fun PantallaLlamadaFigma(
                     .background(Color(0xFF2A2A2A)),
                 contentAlignment = Alignment.Center
             ) {
-                // Indicadores visuales en los extremos
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -328,39 +308,34 @@ fun PantallaLlamadaFigma(
                 }
             }
 
-            // El Botón Central Deslizable (Thumb)
             Box(
                 modifier = Modifier
-                    .offset { IntOffset(offsetX.roundToInt(), 0) } // Translación vectorial
+                    .offset { IntOffset(offsetX.roundToInt(), 0) }
                     .size(80.dp)
                     .clip(CircleShape)
                     .background(Color(0xFFE2E2E2))
                     .pointerInput(Unit) {
                         detectHorizontalDragGestures(
                             onDragEnd = {
-                                // Evaluamos la posición final cuando el usuario suelta el dedo
-                                if (offsetX > umbralActivacion) {
-                                    onContestar()
-                                } else if (offsetX < -umbralActivacion) {
-                                    onRechazar()
+                                if (offsetX > activationThreshold) {
+                                    onAnswer()
+                                } else if (offsetX < -activationThreshold) {
+                                    onReject()
                                 } else {
-                                    // Si no cruzó el umbral, el botón regresa al centro (resorte)
                                     offsetX = 0f
                                 }
                             },
                             onHorizontalDrag = { change, dragAmount ->
                                 change.consume()
-                                // Actualizamos la posición, pero no dejamos que salga de la pista
-                                offsetX = (offsetX + dragAmount).coerceIn(-limiteDeslizamiento, limiteDeslizamiento)
+                                offsetX = (offsetX + dragAmount).coerceIn(-dragLimit, dragLimit)
                             }
                         )
                     },
                 contentAlignment = Alignment.Center
             ) {
-                // Icono central (Escudo dinámico)
                 Icon(
                     imageVector = Icons.Default.Security,
-                    contentDescription = "Desliza",
+                    contentDescription = "Slide",
                     tint = Color(0xFF131313)
                 )
             }
