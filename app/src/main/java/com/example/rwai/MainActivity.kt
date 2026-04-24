@@ -47,20 +47,59 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.net.Uri
 import androidx.core.content.ContextCompat
+import com.google.i18n.phonenumbers.PhoneNumberUtil
+import com.google.i18n.phonenumbers.NumberParseException
+import com.google.i18n.phonenumbers.geocoding.PhoneNumberOfflineGeocoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * Representa un registro de llamada individual.
+ * Representa un registro de llamada individual con información de origen.
  */
 data class CallRecord(
     val number: String,
     val name: String,
     val callType: Int,
     val timestamp: String,
-    var frequency: Int = 1
+    var frequency: Int = 1,
+    val country: String = "Unknown",
+    val location: String = "Unknown"
 )
+
+/**
+ * Utilidad para identificar la procedencia de los números telefónicos usando libphonenumber de Google.
+ */
+object NumberIdentifier {
+    private val phoneUtil = PhoneNumberUtil.getInstance()
+    private val geocoder = PhoneNumberOfflineGeocoder.getInstance()
+    private val defaultLocale = Locale("es", "MX")
+
+    fun identify(number: String): Pair<String, String> {
+        return try {
+            val phoneNumber = phoneUtil.parse(number, if (number.startsWith("+")) null else "MX")
+            val regionCode = phoneUtil.getRegionCodeForNumber(phoneNumber)
+            val countryName = Locale("", regionCode ?: "MX").getDisplayCountry(defaultLocale)
+            val location = geocoder.getDescriptionForNumber(phoneNumber, defaultLocale)
+
+            val finalLocation = if (location.isNotEmpty()) {
+                location
+            } else {
+                when (phoneUtil.getNumberType(phoneNumber)) {
+                    PhoneNumberUtil.PhoneNumberType.MOBILE -> "Móvil"
+                    PhoneNumberUtil.PhoneNumberType.FIXED_LINE -> "Fijo"
+                    PhoneNumberUtil.PhoneNumberType.TOLL_FREE -> "Línea Gratuita"
+                    else -> "Línea General"
+                }
+            }
+            Pair(countryName, finalLocation)
+        } catch (e: NumberParseException) {
+            Pair("Desconocido", "Formato Inválido")
+        } catch (e: Exception) {
+            Pair("Error", "No Identificado")
+        }
+    }
+}
 
 /**
  * Clase encargada de la extracción de datos del historial de llamadas del sistema.
@@ -100,7 +139,8 @@ object CallLogProvider {
                 if (frequencyMap.containsKey(number)) {
                     frequencyMap[number]!!.frequency++
                 } else {
-                    frequencyMap[number] = CallRecord(number, name, type, timeString, 1)
+                    val (country, location) = NumberIdentifier.identify(number)
+                    frequencyMap[number] = CallRecord(number, name, type, timeString, 1, country, location)
                 }
             }
         }
@@ -149,6 +189,9 @@ class MainActivity : ComponentActivity() {
     @RequiresApi(Build.VERSION_CODES.Q)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLogger.initCrashHandler(this)
+        AppLogger.log(this, "MainActivity iniciada.")
+
         val roleManager = getSystemService(ROLE_SERVICE) as RoleManager
         isRoleHeld.value = roleManager.isRoleHeld(RoleManager.ROLE_DIALER)
 
@@ -389,10 +432,10 @@ fun RecordItem(record: CallRecord) {
             Column {
                 if (record.name == "Unknown") {
                     Text(record.number, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text(record.timestamp, color = Color.Gray, fontSize = 12.sp)
+                    Text("${record.country} (${record.location}) • ${record.timestamp}", color = Color.Gray, fontSize = 12.sp)
                 } else {
                     Text(record.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text("${record.number} • ${record.timestamp}", color = Color.Gray, fontSize = 12.sp)
+                    Text("${record.number} • ${record.location} • ${record.timestamp}", color = Color.Gray, fontSize = 12.sp)
                 }
             }
         }
