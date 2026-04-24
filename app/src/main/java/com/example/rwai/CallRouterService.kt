@@ -19,24 +19,24 @@ import java.util.Locale
 
 /**
  * Servicio encargado de gestionar las llamadas entrantes y salientes.
+ * Implementa lógica de filtrado silencioso para evitar interrupciones innecesarias.
  */
 class CallRouterService : InCallService() {
 
     override fun onCreate() {
         super.onCreate()
-        // Inicializa el manejador de errores global.
         AppLogger.initCrashHandler(this)
+        AppLogger.log(this, "CallRouterService creado.")
     }
 
-    /**
-     * Obtiene la hora actual formateada.
-     */
     private fun getCurrentTime(): String {
         return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
     }
 
     private fun registerAnsweredCall(number: String, name: String, type: Int) {
         val index = CallRecordStore.historyRecords.indexOfFirst { it.number == number }
+        val (country, location) = NumberIdentifier.identify(number)
+        
         if (index != -1) {
             val existing = CallRecordStore.historyRecords[index]
             CallRecordStore.historyRecords[index] = existing.copy(
@@ -45,12 +45,14 @@ class CallRouterService : InCallService() {
                 callType = type
             )
         } else {
-            CallRecordStore.historyRecords.add(0, CallRecord(number, name, type, getCurrentTime(), 1))
+            CallRecordStore.historyRecords.add(0, CallRecord(number, name, type, getCurrentTime(), 1, country, location))
         }
     }
 
     private fun registerMissedCall(number: String, name: String, type: Int) {
         val index = CallRecordStore.notificationRecords.indexOfFirst { it.number == number }
+        val (country, location) = NumberIdentifier.identify(number)
+
         if (index != -1) {
             val existing = CallRecordStore.notificationRecords[index]
             CallRecordStore.notificationRecords[index] = existing.copy(
@@ -59,7 +61,7 @@ class CallRouterService : InCallService() {
                 callType = type
             )
         } else {
-            CallRecordStore.notificationRecords.add(0, CallRecord(number, name, type, getCurrentTime(), 1))
+            CallRecordStore.notificationRecords.add(0, CallRecord(number, name, type, getCurrentTime(), 1, country, location))
         }
     }
 
@@ -69,13 +71,14 @@ class CallRouterService : InCallService() {
 
         val incomingNumber = call.details.handle?.schemeSpecificPart ?: "Hidden"
         val currentState = call.details.state
+        
+        AppLogger.log(this, "Nueva llamada detectada: $incomingNumber (Estado: $currentState)")
 
-        // Gestión de llamadas entrantes
         if (currentState == Call.STATE_RINGING) {
             val contactName = getContactName(incomingNumber)
 
             if (contactName != null) {
-                Log.d("CallRouter", "Contact recognized: $contactName")
+                AppLogger.log(this, "Contacto reconocido: $contactName. Permitiendo interrupción.")
 
                 val callCallback = object : Call.Callback() {
                     var wasAnswered = false
@@ -101,16 +104,22 @@ class CallRouterService : InCallService() {
                 startActivity(intent)
 
             } else {
-                Log.d("CallRouter", "Unknown number detected: $incomingNumber. Rejecting call.")
-                call.reject(Call.REJECT_REASON_DECLINED)
+                // LÓGICA DE FILTRADO SILENCIOSO: 
+                // Al rechazar la llamada inmediatamente aquí, evitamos que el sistema
+                // notifique al usuario o interrumpa dispositivos Bluetooth.
+                AppLogger.log(this, "Número desconocido: $incomingNumber. Rechazando llamada silenciosamente.")
+                
+                try {
+                    call.reject(Call.REJECT_REASON_DECLINED)
+                } catch (e: Exception) {
+                    AppLogger.log(this, "Error al rechazar llamada: ${e.message}", true)
+                }
+                
                 registerMissedCall(incomingNumber, "Unknown", CallLog.Calls.REJECTED_TYPE)
                 sendBlockedCallNotification(incomingNumber)
             }
         }
-        // Gestión de llamadas salientes
         else if (currentState == Call.STATE_CONNECTING || currentState == Call.STATE_DIALING) {
-
-            Log.d("CallRouter", "Initiating outgoing call to: $incomingNumber")
             val contactName = getContactName(incomingNumber) ?: "Unknown"
 
             val callCallback = object : Call.Callback() {
@@ -138,28 +147,27 @@ class CallRouterService : InCallService() {
 
     override fun onCallRemoved(call: Call) {
         super.onCallRemoved(call)
-        Log.d("CallRouter", "Call ended and resources released.")
+        AppLogger.log(this, "Llamada finalizada.")
     }
 
-    /**
-     * Consulta el nombre del contacto asociado a un número de teléfono.
-     */
     private fun getContactName(number: String): String? {
-        val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number))
-        val projection = arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME)
+        return try {
+            val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number))
+            val projection = arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME)
 
-        contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val index = cursor.getColumnIndex(ContactsContract.PhoneLookup.DISPLAY_NAME)
-                if (index != -1) return cursor.getString(index)
+            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(ContactsContract.PhoneLookup.DISPLAY_NAME)
+                    if (index != -1) return cursor.getString(index)
+                }
             }
+            null
+        } catch (e: Exception) {
+            AppLogger.log(this, "Error al buscar contacto: ${e.message}", true)
+            null
         }
-        return null
     }
 
-    /**
-     * Envía una notificación cuando una llamada es interceptada/bloqueada.
-     */
     private fun sendBlockedCallNotification(number: String) {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channelId = "blocked_calls_channel"
@@ -175,10 +183,12 @@ class CallRouterService : InCallService() {
             notificationManager.createNotificationChannel(channel)
         }
 
+        val (country, location) = NumberIdentifier.identify(number)
+
         val notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("Call Blocked")
-            .setContentText("Blocked number: $number")
+            .setContentText("Blocked number: $number ($location, $country)")
             .setAutoCancel(true)
             .build()
 

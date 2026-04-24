@@ -50,6 +50,11 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     // Inyección del paquete completo de íconos Material
     implementation("androidx.compose.material:material-icons-extended")
+
+    // Dependencias de Google para identificación de números (libphonenumber)
+    implementation("com.googlecode.libphonenumber:libphonenumber:9.0.28")
+    implementation("com.googlecode.libphonenumber:geocoder:2.216")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
