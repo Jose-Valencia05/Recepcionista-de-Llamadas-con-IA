@@ -114,6 +114,7 @@ fun ActiveCallScreen(
     var callSeconds by remember { mutableIntStateOf(0) }
     var isSpeakerOn by remember { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
+    var isHoldActive by remember { mutableStateOf(false) }
     var isDialpadVisible by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -205,28 +206,50 @@ fun ActiveCallScreen(
 
         // Panel de controles de llamada
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp).align(Alignment.BottomCenter).padding(bottom = 200.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).align(Alignment.BottomCenter).padding(bottom = 200.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            ControlButton(Icons.Outlined.MicOff, "MUTE", isMuted) {
+            ControlButton(
+                icon = if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                label = "MUTE",
+                isActive = isMuted
+            ) {
                 isMuted = !isMuted
                 CallManager.currentService?.setMuted(isMuted)
             }
-            ControlButton(Icons.Outlined.Dialpad, "KEYPAD", isDialpadVisible) {
-                isDialpadVisible = !isDialpadVisible
+
+            ControlButton(
+                icon = if (isHoldActive) Icons.Default.PlayArrow else Icons.Default.Pause,
+                label = "HOLD",
+                isActive = isHoldActive
+            ) {
+                isHoldActive = !isHoldActive
+                if (isHoldActive) {
+                    CallManager.currentCall?.hold()
+                } else {
+                    CallManager.currentCall?.unhold()
+                }
             }
 
-            ControlButton(Icons.Outlined.PersonAdd, "ADD") {
+            ControlButton(Icons.Default.PersonAdd, "ADD") {
                 val dialIntent = android.content.Intent(android.content.Intent.ACTION_DIAL).apply {
                     flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
                 }
                 context.startActivity(dialIntent)
             }
 
-            ControlButton(Icons.AutoMirrored.Outlined.VolumeUp, "SPEAKER", isSpeakerOn) {
+            ControlButton(
+                icon = if (isSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                label = "SPEAKER",
+                isActive = isSpeakerOn
+            ) {
                 isSpeakerOn = !isSpeakerOn
                 val audioRoute = if (isSpeakerOn) android.telecom.CallAudioState.ROUTE_SPEAKER else android.telecom.CallAudioState.ROUTE_WIRED_OR_EARPIECE
                 CallManager.currentService?.setAudioRoute(audioRoute)
+            }
+
+            ControlButton(Icons.Outlined.Dialpad, "KEYPAD", isDialpadVisible) {
+                isDialpadVisible = !isDialpadVisible
             }
         }
 

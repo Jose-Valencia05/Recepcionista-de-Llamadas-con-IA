@@ -42,10 +42,21 @@ class CallRouterService : InCallService() {
             CallRecordStore.historyRecords[index] = existing.copy(
                 frequency = existing.frequency + 1,
                 timestamp = getCurrentTime(),
-                callType = type
+                callType = type,
+                country = country,
+                location = location
             )
         } else {
-            CallRecordStore.historyRecords.add(0, CallRecord(number, name, type, getCurrentTime(), 1, country, location))
+            CallRecordStore.historyRecords.add(0, CallRecord(
+                number = number, 
+                name = name, 
+                callType = type, 
+                timestamp = getCurrentTime(), 
+                frequency = 1, 
+                country = country, 
+                location = location,
+                epochTime = System.currentTimeMillis()
+            ))
         }
     }
 
@@ -58,10 +69,21 @@ class CallRouterService : InCallService() {
             CallRecordStore.notificationRecords[index] = existing.copy(
                 frequency = existing.frequency + 1,
                 timestamp = getCurrentTime(),
-                callType = type
+                callType = type,
+                country = country,
+                location = location
             )
         } else {
-            CallRecordStore.notificationRecords.add(0, CallRecord(number, name, type, getCurrentTime(), 1, country, location))
+            CallRecordStore.notificationRecords.add(0, CallRecord(
+                number = number, 
+                name = name, 
+                callType = type, 
+                timestamp = getCurrentTime(), 
+                frequency = 1, 
+                country = country, 
+                location = location,
+                epochTime = System.currentTimeMillis()
+            ))
         }
     }
 

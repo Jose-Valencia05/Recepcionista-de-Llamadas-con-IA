@@ -25,6 +25,36 @@ object AppLogger {
     }
 
     /**
+     * Lee el contenido del archivo de logs.
+     */
+    fun readLogs(context: Context): String {
+        return try {
+            val archivo = File(context.filesDir, "app_logs.txt")
+            if (archivo.exists()) {
+                archivo.readText()
+            } else {
+                "El archivo de logs no existe."
+            }
+        } catch (e: Exception) {
+            "Error al leer logs: ${e.message}"
+        }
+    }
+
+    /**
+     * Limpia el archivo de logs.
+     */
+    fun clearLogs(context: Context) {
+        try {
+            val archivo = File(context.filesDir, "app_logs.txt")
+            if (archivo.exists()) {
+                archivo.writeText("")
+            }
+        } catch (e: Exception) {
+            Log.e("AppLogger", "Error al limpiar logs", e)
+        }
+    }
+
+    /**
      * Configura un manejador de excepciones no capturadas para registrar errores críticos.
      */
     fun initCrashHandler(context: Context) {
