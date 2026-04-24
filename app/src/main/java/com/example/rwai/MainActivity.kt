@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.CallLog
+import android.provider.ContactsContract
 import android.telecom.TelecomManager
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -64,7 +65,9 @@ data class CallRecord(
     val timestamp: String,
     var frequency: Int = 1,
     val country: String = "Unknown",
-    val location: String = "Unknown"
+    val location: String = "Unknown",
+    val duration: Long = 0L,
+    val epochTime: Long = 0L
 )
 
 /**
@@ -106,6 +109,25 @@ object NumberIdentifier {
  */
 object CallLogProvider {
     /**
+     * Busca el nombre de un contacto por su número telefónico.
+     */
+    fun getContactName(context: Context, number: String): String? {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
+        
+        return try {
+            val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number))
+            val projection = arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME)
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    cursor.getString(0)
+                } else null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
      * Recupera y procesa el historial de llamadas reciente.
      */
     fun refreshCallLogs(context: Context) {
@@ -116,7 +138,7 @@ object CallLogProvider {
 
         val cursor = context.contentResolver.query(
             CallLog.Calls.CONTENT_URI,
-            arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.TYPE, CallLog.Calls.DATE),
+            arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION),
             null, null, CallLog.Calls.DATE + " DESC"
         )
 
@@ -128,19 +150,29 @@ object CallLogProvider {
             val nameIndex = it.getColumnIndex(CallLog.Calls.CACHED_NAME)
             val typeIndex = it.getColumnIndex(CallLog.Calls.TYPE)
             val dateIndex = it.getColumnIndex(CallLog.Calls.DATE)
+            val durationIndex = it.getColumnIndex(CallLog.Calls.DURATION)
 
             while (it.moveToNext()) {
                 val number = it.getString(numberIndex) ?: "Unknown"
-                val name = it.getString(nameIndex) ?: "Unknown"
+                var name = it.getString(nameIndex) ?: "Unknown"
                 val type = it.getInt(typeIndex)
                 val epochTime = it.getLong(dateIndex)
+                val duration = it.getLong(durationIndex)
                 val timeString = timeFormat.format(Date(epochTime))
+
+                // Si el nombre es desconocido, intentamos buscarlo activamente en los contactos
+                if (name == "Unknown" || name.isEmpty()) {
+                    val activeName = getContactName(context, number)
+                    if (activeName != null) {
+                        name = activeName
+                    }
+                }
 
                 if (frequencyMap.containsKey(number)) {
                     frequencyMap[number]!!.frequency++
                 } else {
                     val (country, location) = NumberIdentifier.identify(number)
-                    frequencyMap[number] = CallRecord(number, name, type, timeString, 1, country, location)
+                    frequencyMap[number] = CallRecord(number, name, type, timeString, 1, country, location, duration, epochTime)
                 }
             }
         }
@@ -165,7 +197,13 @@ object CallRecordStore {
     val notificationRecords = mutableStateListOf<CallRecord>()
 
     fun getFavorites(): List<CallRecord> {
-        return historyRecords.sortedByDescending { it.frequency }.take(3)
+        val oneMonthAgo = System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000)
+        return (historyRecords + notificationRecords)
+            .filter { it.name != "Unknown" && it.name.isNotEmpty() }
+            .filter { it.epochTime >= oneMonthAgo }
+            .sortedByDescending { it.frequency }
+            .distinctBy { it.number }
+            .take(3)
     }
 
     fun findMatch(number: String): CallRecord? {
@@ -219,6 +257,7 @@ fun MainScreen(hasControl: Boolean, onPermissionRequestClick: () -> Unit) {
 
     var searchQuery by remember { mutableStateOf("") }
     var isKeyboardVisible by remember { mutableStateOf(false) }
+    var showLogViewer by remember { mutableStateOf(false) }
 
     val topBarPadding by animateDpAsState(targetValue = if (isKeyboardVisible) 100.dp else 16.dp, animationSpec = tween(400), label = "")
 
@@ -265,6 +304,30 @@ fun MainScreen(hasControl: Boolean, onPermissionRequestClick: () -> Unit) {
                     focusManager.clearFocus()
                 }
         ) {
+            // Log Viewer Button
+            if (!isKeyboardVisible) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                ) {
+                    IconButton(
+                        onClick = { showLogViewer = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Menu,
+                            contentDescription = "Ver Logs",
+                            tint = Color.Gray.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+            }
+
+            if (showLogViewer) {
+                LogViewerDialog(onDismiss = { showLogViewer = false })
+            }
+
             Column(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -346,22 +409,81 @@ fun MainScreen(hasControl: Boolean, onPermissionRequestClick: () -> Unit) {
                     )
                 } else {
                     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                        Text("Recent Activity", color = Color(0xFFFFB3AE), fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
-                        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).wrapContentHeight()) {
-                            items(CallRecordStore.notificationRecords) { record -> RecordItem(record) }
+                        Text("Historial de llamadas", color = Color(0xFF78DC77), fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
+                        
+                        val allRecords = remember { 
+                            derivedStateOf { 
+                                (CallRecordStore.notificationRecords + CallRecordStore.historyRecords)
+                                    .sortedByDescending { it.epochTime }
+                            }
                         }
 
-                        Spacer(modifier = Modifier.height(24.dp))
-
-                        Text("Call History", color = Color(0xFF78DC77), fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
-                        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).wrapContentHeight()) {
-                            items(CallRecordStore.historyRecords) { record -> RecordItem(record) }
+                        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp).wrapContentHeight()) {
+                            items(allRecords.value) { record -> RecordItem(record) }
                         }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+fun LogViewerDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var logContent by remember { mutableStateOf(AppLogger.readLogs(context)) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Logs del Sistema", color = Color.White, fontSize = 18.sp)
+                Row {
+                    IconButton(onClick = { logContent = AppLogger.readLogs(context) }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refrescar", tint = Color(0xFF78DC77))
+                    }
+                    IconButton(onClick = {
+                        AppLogger.clearLogs(context)
+                        logContent = AppLogger.readLogs(context)
+                    }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Limpiar", tint = Color.Gray)
+                    }
+                }
+            }
+        },
+        text = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(400.dp)
+                    .background(Color.Black)
+                    .padding(8.dp)
+            ) {
+                val scrollState = rememberScrollState()
+                LaunchedEffect(logContent) {
+                    scrollState.scrollTo(scrollState.maxValue)
+                }
+                Text(
+                    text = logContent,
+                    color = Color.LightGray,
+                    fontSize = 10.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    modifier = Modifier.verticalScroll(scrollState)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cerrar", color = Color(0xFF78DC77))
+            }
+        },
+        containerColor = Color(0xFF1B1B1B),
+        shape = RoundedCornerShape(16.dp)
+    )
 }
 
 @Composable
@@ -419,25 +541,66 @@ fun Dialpad(onDigitPressed: (String) -> Unit, onDelete: () -> Unit, onCall: () -
 fun RecordItem(record: CallRecord) {
     val (icon, iconColor) = when (record.callType) {
         CallLog.Calls.MISSED_TYPE -> Icons.Default.PhoneMissed to Color.White
-        CallLog.Calls.REJECTED_TYPE, CallLog.Calls.BLOCKED_TYPE -> Icons.Default.Block to Color(0xFFFFB3AE)
+        CallLog.Calls.REJECTED_TYPE -> Icons.Default.Block to Color(0xFFFFB3AE)
+        CallLog.Calls.BLOCKED_TYPE -> Icons.Default.Block to Color(0xFFFFB3AE)
         CallLog.Calls.OUTGOING_TYPE -> Icons.Default.CallMade to Color(0xFF78DC77)
         CallLog.Calls.INCOMING_TYPE -> Icons.Default.CallReceived to Color(0xFF78DC77)
         else -> Icons.Default.Call to Color.Gray
+    }
+
+    val displayDate = remember(record.epochTime) {
+        val now = System.currentTimeMillis()
+        val calendar = java.util.Calendar.getInstance()
+        val recordCalendar = java.util.Calendar.getInstance().apply { timeInMillis = record.epochTime }
+        
+        val isToday = calendar.get(java.util.Calendar.YEAR) == recordCalendar.get(java.util.Calendar.YEAR) &&
+                calendar.get(java.util.Calendar.DAY_OF_YEAR) == recordCalendar.get(java.util.Calendar.DAY_OF_YEAR)
+        
+        calendar.add(java.util.Calendar.DAY_OF_YEAR, -1)
+        val isYesterday = calendar.get(java.util.Calendar.YEAR) == recordCalendar.get(java.util.Calendar.YEAR) &&
+                calendar.get(java.util.Calendar.DAY_OF_YEAR) == recordCalendar.get(java.util.Calendar.DAY_OF_YEAR)
+        
+        val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(record.epochTime))
+        when {
+            isToday -> "Hoy • $timeStr"
+            isYesterday -> "Ayer • $timeStr"
+            else -> SimpleDateFormat("dd/MM • HH:mm", Locale.getDefault()).format(Date(record.epochTime))
+        }
+    }
+
+    val durationText = remember(record.duration) {
+        if (record.duration == 0L) "" else {
+            val mins = record.duration / 60
+            val secs = record.duration % 60
+            if (mins > 0) "${mins}m ${secs}s" else "${secs}s"
+        }
     }
 
     Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF2A2A2A)).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = iconColor, modifier = Modifier.size(24.dp))
             Spacer(modifier = Modifier.width(16.dp))
-            Column {
-                if (record.name == "Unknown") {
+            Column(modifier = Modifier.weight(1f)) {
+                if (record.name == "Unknown" || record.name.isEmpty()) {
                     Text(record.number, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text("${record.country} (${record.location}) • ${record.timestamp}", color = Color.Gray, fontSize = 12.sp)
+                    Text("${record.location}, ${record.country}", color = Color.Gray, fontSize = 12.sp)
                 } else {
                     Text(record.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text("${record.number} • ${record.location} • ${record.timestamp}", color = Color.Gray, fontSize = 12.sp)
+                    val details = listOfNotNull(
+                        record.number,
+                        record.location.takeIf { it != "Unknown" },
+                        record.country.takeIf { it != "Unknown" },
+                        durationText.takeIf { it.isNotEmpty() }
+                    ).joinToString(", ")
+                    Text(details, color = Color.Gray, fontSize = 12.sp)
                 }
             }
+            Text(
+                text = displayDate,
+                color = Color.Gray,
+                fontSize = 11.sp,
+                modifier = Modifier.align(Alignment.Top)
+            )
         }
     }
 }
